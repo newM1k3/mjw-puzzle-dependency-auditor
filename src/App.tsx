@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { Network, FlaskConical, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Network, FlaskConical, RotateCcw, FolderOpen, ChevronDown } from 'lucide-react';
 import { Project, Step } from './types';
 import { runDependencyAudit } from './lib/auditEngine';
 import { clockmakerProject } from './data/sampleProject';
+import { pb, saveProject, loadProjects, type SavedProjectMeta } from './lib/pocketbase';
 import ProgressRail from './components/ProgressRail';
 import SummaryPanel from './components/SummaryPanel';
 import ProjectSetupForm from './components/ProjectSetupForm';
@@ -41,6 +42,40 @@ export default function App() {
   const [currentStep, setCurrentStep] = useState<Step>('setup');
   const [completedSteps, setCompletedSteps] = useState<Set<Step>>(new Set());
   const [subView, setSubView] = useState<SubView>('form');
+  const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
+  const [showResumeMenu, setShowResumeMenu] = useState(false);
+  const projectIdRef = useRef<string>(crypto.randomUUID());
+
+  // SSO token handoff + load saved projects on mount
+  useEffect(() => {
+    async function initApp() {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+      if (token) {
+        try {
+          pb.authStore.save(token, null);
+          await pb.collection('users').authRefresh();
+        } catch {
+          pb.authStore.clear();
+        }
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+
+      const projects = await loadProjects();
+      setSavedProjects(projects);
+    }
+    void initApp();
+  }, []);
+
+  const persistProject = useCallback(async (p: Project) => {
+    try {
+      await saveProject(projectIdRef.current, p);
+      const refreshed = await loadProjects();
+      setSavedProjects(refreshed);
+    } catch (err) {
+      console.warn('Puzzle Dependency Auditor: save failed', err);
+    }
+  }, []);
 
   const markComplete = (step: Step) => {
     setCompletedSteps(prev => new Set([...prev, step]));
@@ -54,7 +89,12 @@ export default function App() {
   const nextStep = (current: Step) => {
     markComplete(current);
     const idx = STEPS.indexOf(current);
-    if (idx < STEPS.length - 1) goToStep(STEPS[idx + 1]);
+    const next = STEPS[idx + 1];
+    if (next) {
+      goToStep(next);
+      // Auto-save when entering export
+      if (next === 'export') void persistProject(project);
+    }
   };
 
   const runAudit = () => {
@@ -64,6 +104,7 @@ export default function App() {
   };
 
   const loadSample = () => {
+    projectIdRef.current = crypto.randomUUID();
     setProject({ ...clockmakerProject, auditResult: null });
     setCurrentStep('setup');
     setCompletedSteps(new Set());
@@ -71,10 +112,20 @@ export default function App() {
   };
 
   const resetProject = () => {
+    projectIdRef.current = crypto.randomUUID();
     setProject(EMPTY_PROJECT);
     setCurrentStep('setup');
     setCompletedSteps(new Set());
     setSubView('form');
+  };
+
+  const resumeProject = (meta: SavedProjectMeta) => {
+    projectIdRef.current = meta.externalId;
+    setProject(meta.project);
+    setCurrentStep('setup');
+    setCompletedSteps(new Set(STEPS.slice(0, STEPS.length - 1) as Step[]));
+    setSubView('form');
+    setShowResumeMenu(false);
   };
 
   return (
@@ -101,6 +152,37 @@ export default function App() {
           <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
             Design QA Tool
           </span>
+
+          {savedProjects.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setShowResumeMenu((v) => !v)}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/15 transition-colors"
+              >
+                <FolderOpen size={13} /> My Projects <ChevronDown size={11} />
+              </button>
+              {showResumeMenu && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setShowResumeMenu(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-30 w-64 rounded-xl border border-slate-700 bg-slate-900 shadow-xl overflow-hidden">
+                    {savedProjects.map((meta) => (
+                      <button
+                        key={meta.id}
+                        onClick={() => resumeProject(meta)}
+                        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-800 transition-colors border-b border-slate-800 last:border-0"
+                      >
+                        <span className="text-sm text-slate-200 truncate">{meta.title || 'Untitled'}</span>
+                        <span className="text-xs text-slate-500 shrink-0 ml-2">
+                          {new Date(meta.savedAt).toLocaleDateString()}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           <button
             onClick={loadSample}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/15 transition-colors"
