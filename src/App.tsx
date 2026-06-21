@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Network, FlaskConical, RotateCcw, DoorOpen, ChevronDown } from 'lucide-react';
+import { Network, FlaskConical, RotateCcw, DoorOpen, ChevronDown, Loader2 } from 'lucide-react';
 import { Project, Step } from './types';
 import { runDependencyAudit } from './lib/auditEngine';
 import { clockmakerProject } from './data/sampleProject';
@@ -52,6 +52,7 @@ export default function App() {
   const [ctx, setCtx] = useState<RoomContext | null>(null);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [showResumeMenu, setShowResumeMenu] = useState(false);
+  const [loadingRoom, setLoadingRoom] = useState(false);
 
   // SSO token handoff + resolve the venue's rooms, then load the active room's audit.
   useEffect(() => {
@@ -94,12 +95,18 @@ export default function App() {
 
   // Switch the active room: load (or Story-seed) its audit.
   const selectRoom = useCallback(async (room: RoomOption) => {
-    setActiveRoomId(room.id);
-    setProject(await loadAudit(room));
-    setCurrentStep('setup');
-    setCompletedSteps(new Set());
-    setSubView('form');
+    setActiveRoomId(room.id); // move the highlight immediately for instant feedback
     setShowResumeMenu(false);
+    setLoadingRoom(true);
+    try {
+      const loaded = await loadAudit(room);
+      setProject(loaded);
+      setCurrentStep('setup');
+      setCompletedSteps(new Set());
+      setSubView('form');
+    } finally {
+      setLoadingRoom(false);
+    }
   }, []);
 
   const markComplete = (step: Step) => {
@@ -173,7 +180,7 @@ export default function App() {
                 onClick={() => setShowResumeMenu((v) => !v)}
                 className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/15 transition-colors"
               >
-                <DoorOpen size={13} /> Rooms <ChevronDown size={11} />
+                {loadingRoom ? <Loader2 size={13} className="animate-spin" /> : <DoorOpen size={13} />} Rooms <ChevronDown size={11} />
               </button>
               {showResumeMenu && (
                 <>
