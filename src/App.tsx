@@ -1,9 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Network, FlaskConical, RotateCcw, FolderOpen, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Network, FlaskConical, RotateCcw, DoorOpen, ChevronDown } from 'lucide-react';
 import { Project, Step } from './types';
 import { runDependencyAudit } from './lib/auditEngine';
 import { clockmakerProject } from './data/sampleProject';
-import { pb, saveProject, loadProjects, type SavedProjectMeta } from './lib/pocketbase';
+import { pb } from './lib/pocketbase';
+import {
+  resolveRoomContext,
+  loadAudit,
+  saveAudit,
+  type RoomContext,
+  type RoomOption,
+} from './lib/dependency';
 import ProgressRail from './components/ProgressRail';
 import SummaryPanel from './components/SummaryPanel';
 import ProjectSetupForm from './components/ProjectSetupForm';
@@ -42,11 +49,11 @@ export default function App() {
   const [currentStep, setCurrentStep] = useState<Step>('setup');
   const [completedSteps, setCompletedSteps] = useState<Set<Step>>(new Set());
   const [subView, setSubView] = useState<SubView>('form');
-  const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
+  const [ctx, setCtx] = useState<RoomContext | null>(null);
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [showResumeMenu, setShowResumeMenu] = useState(false);
-  const projectIdRef = useRef<string>(crypto.randomUUID());
 
-  // SSO token handoff + load saved projects on mount
+  // SSO token handoff + resolve the venue's rooms, then load the active room's audit.
   useEffect(() => {
     async function initApp() {
       const params = new URLSearchParams(window.location.search);
@@ -58,23 +65,41 @@ export default function App() {
         } catch {
           pb.authStore.clear();
         }
-        window.history.replaceState({}, '', window.location.pathname);
       }
+      // Optional ?room= deep-link (forward-compatible with the dash launcher).
+      const roomParam = params.get('room');
+      window.history.replaceState({}, '', window.location.pathname);
 
-      const projects = await loadProjects();
-      setSavedProjects(projects);
+      const resolved = await resolveRoomContext();
+      if (!resolved) return; // not signed in / no venue → stays on the blank/sample flow
+      setCtx(resolved);
+
+      const room = resolved.rooms.find((r) => r.id === roomParam) ?? resolved.rooms[0] ?? null;
+      if (room) {
+        setActiveRoomId(room.id);
+        setProject(await loadAudit(room));
+      }
     }
     void initApp();
   }, []);
 
   const persistProject = useCallback(async (p: Project) => {
+    if (!pb.authStore.isValid || !ctx || !activeRoomId) return;
     try {
-      await saveProject(projectIdRef.current, p);
-      const refreshed = await loadProjects();
-      setSavedProjects(refreshed);
+      await saveAudit(ctx, activeRoomId, p);
     } catch (err) {
       console.warn('Puzzle Dependency Auditor: save failed', err);
     }
+  }, [ctx, activeRoomId]);
+
+  // Switch the active room: load (or Story-seed) its audit.
+  const selectRoom = useCallback(async (room: RoomOption) => {
+    setActiveRoomId(room.id);
+    setProject(await loadAudit(room));
+    setCurrentStep('setup');
+    setCompletedSteps(new Set());
+    setSubView('form');
+    setShowResumeMenu(false);
   }, []);
 
   const markComplete = (step: Step) => {
@@ -104,7 +129,6 @@ export default function App() {
   };
 
   const loadSample = () => {
-    projectIdRef.current = crypto.randomUUID();
     setProject({ ...clockmakerProject, auditResult: null });
     setCurrentStep('setup');
     setCompletedSteps(new Set());
@@ -112,20 +136,10 @@ export default function App() {
   };
 
   const resetProject = () => {
-    projectIdRef.current = crypto.randomUUID();
     setProject(EMPTY_PROJECT);
     setCurrentStep('setup');
     setCompletedSteps(new Set());
     setSubView('form');
-  };
-
-  const resumeProject = (meta: SavedProjectMeta) => {
-    projectIdRef.current = meta.externalId;
-    setProject(meta.project);
-    setCurrentStep('setup');
-    setCompletedSteps(new Set(STEPS.slice(0, STEPS.length - 1) as Step[]));
-    setSubView('form');
-    setShowResumeMenu(false);
   };
 
   return (
@@ -153,28 +167,32 @@ export default function App() {
             Design QA Tool
           </span>
 
-          {savedProjects.length > 0 && (
+          {ctx && ctx.rooms.length > 0 && (
             <div className="relative">
               <button
                 onClick={() => setShowResumeMenu((v) => !v)}
                 className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/15 transition-colors"
               >
-                <FolderOpen size={13} /> My Projects <ChevronDown size={11} />
+                <DoorOpen size={13} /> Rooms <ChevronDown size={11} />
               </button>
               {showResumeMenu && (
                 <>
                   <div className="fixed inset-0 z-20" onClick={() => setShowResumeMenu(false)} />
                   <div className="absolute right-0 top-full mt-1.5 z-30 w-64 rounded-xl border border-slate-700 bg-slate-900 shadow-xl overflow-hidden">
-                    {savedProjects.map((meta) => (
+                    {ctx.rooms.map((room) => (
                       <button
-                        key={meta.id}
-                        onClick={() => resumeProject(meta)}
-                        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-800 transition-colors border-b border-slate-800 last:border-0"
+                        key={room.id}
+                        onClick={() => selectRoom(room)}
+                        className={`w-full flex items-center justify-between px-4 py-3 text-left transition-colors border-b border-slate-800 last:border-0 ${
+                          room.id === activeRoomId ? 'bg-cyan-500/10' : 'hover:bg-slate-800'
+                        }`}
                       >
-                        <span className="text-sm text-slate-200 truncate">{meta.title || 'Untitled'}</span>
-                        <span className="text-xs text-slate-500 shrink-0 ml-2">
-                          {new Date(meta.savedAt).toLocaleDateString()}
+                        <span className={`text-sm truncate ${room.id === activeRoomId ? 'text-cyan-300' : 'text-slate-200'}`}>
+                          {room.title}
                         </span>
+                        {room.id === activeRoomId && (
+                          <span className="text-xs text-cyan-400 shrink-0 ml-2">Active</span>
+                        )}
                       </button>
                     ))}
                   </div>
