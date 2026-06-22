@@ -239,8 +239,9 @@ export default function App() {
           />
         </div>
 
-        {/* Main workspace */}
-        <main className="flex-1 overflow-y-auto p-8">
+        {/* Main workspace — keyed on the active room so switching rooms remounts the
+            step views with the freshly loaded audit (forces a clean refresh). */}
+        <main key={activeRoomId ?? 'no-room'} className="flex-1 overflow-y-auto p-8">
           {currentStep === 'setup' && (
             <ProjectSetupForm
               setup={project.setup}
